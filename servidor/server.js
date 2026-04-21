@@ -2,86 +2,103 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const dbHelper = require('./database/db'); 
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
 
 const app = express();
 app.use(cors());
+
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: { origin: "http://localhost:3000", methods: ["GET", "POST"] }
+    cors: { origin: "*", methods: ["GET", "POST"] }
+});
+
+const uploadDir = path.join(__dirname, '../interface/public/patrocinadores');
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// 🔥 O SEGREDO ESTÁ AQUI: O Backend agora serve as imagens ao vivo!
+app.use('/patrocinadores', express.static(uploadDir));
+
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) { cb(null, uploadDir); },
+    filename: function (req, file, cb) {
+        const { numero, index } = req.body;
+        cb(null, `${numero}-${parseInt(index) + 1}.png`);
+    }
+});
+const upload = multer({ storage: storage });
+
+app.post('/upload', upload.single('imagem'), (req, res) => {
+    console.log(`📸 Nova imagem salva com sucesso para a pedra: ${req.body.numero}`);
+    res.json({ success: true });
 });
 
 let pedrasSorteadas = [];
 let cartelas = [];
+let patrocinadores = {};
 
-async function carregarDados() {
-    try {
-        cartelas = await dbHelper.getCartelas();
-        dbHelper.db.all("SELECT pedra FROM sorteio", (err, rows) => {
-            if(!err && rows) pedrasSorteadas = rows.map(r => r.pedra);
-            console.log(`🧠 Backend Pronto: ${cartelas.length} cartelas | ${pedrasSorteadas.length} pedras.`);
-        });
-    } catch (err) { console.error("Erro no banco:", err); }
+try {
+    const rawData = fs.readFileSync('cartelas.json');
+    cartelas = JSON.parse(rawData);
+    console.log(`✅ ${cartelas.length} cartelas prontas!`);
+} catch (err) { console.error("❌ ERRO: 'cartelas.json' não encontrado."); }
+
+try {
+    const patData = fs.readFileSync('patrocinadores.json');
+    patrocinadores = JSON.parse(patData);
+    console.log(`✅ Patrocinadores carregados localmente!`);
+} catch (err) { 
+    fs.writeFileSync('patrocinadores.json', JSON.stringify({}));
 }
-carregarDados();
 
-function verificarProximidade(lista, sorteados) {
-    let alertas = [];
-    lista.forEach(cartela => {
-        let marcados = 0;
-        cartela.numeros.forEach(num => {
-            if (sorteados.includes(num)) marcados++;
-        });
-        let faltam = cartela.numeros.length - marcados;
-        if (faltam <= 5 && faltam > 0) {
-            alertas.push({ tabela: cartela.id, nome: cartela.nome, faltam: faltam });
-        } else if (faltam === 0) {
-            alertas.push({ tabela: cartela.id, nome: cartela.nome, faltam: 0, bingo: true });
-        }
+function enviarRanking() {
+    let ranking = cartelas.map(cartela => {
+        let faltam = cartela.numeros.filter(n => !pedrasSorteadas.includes(n)).length;
+        return { tabela: cartela.tabela || cartela.id, faltam: faltam, numeros: cartela.numeros };
     });
-    // Ordena para mostrar quem falta menos primeiro
-    return alertas.sort((a, b) => a.faltam - b.faltam);
+    ranking.sort((a, b) => a.faltam - b.faltam);
+    io.emit('ranking_update', ranking.slice(0, 50));
 }
 
-io.on('connection', async (socket) => {
-    socket.emit('init', { pedrasSorteadas, cartelas });
-    
-    // Envia alertas iniciais (F5 amigável)
-    if(pedrasSorteadas.length > 0) {
-        socket.emit('alerta_proximidade', verificarProximidade(cartelas, pedrasSorteadas));
-    }
+io.on('connection', (socket) => {
+    socket.emit('init', { pedrasSorteadas, patrocinadores });
+    enviarRanking(); 
 
-    socket.on('sortear', (num) => {
+    socket.on('salvar_patrocinadores', (novos) => {
+        patrocinadores = novos;
+        fs.writeFileSync('patrocinadores.json', JSON.stringify(patrocinadores, null, 2));
+        io.emit('patrocinadores_atualizados', patrocinadores);
+    });
+
+    socket.on('sortear_pedra', (num) => {
         if (!pedrasSorteadas.includes(num)) {
             pedrasSorteadas.push(num);
-            dbHelper.db.run("INSERT INTO sorteio (pedra) VALUES (?)", [num]);
             io.emit('pedra_sorteada', num);
             
-            // Roda a conferência e avisa a todos
-            const alertas = verificarProximidade(cartelas, pedrasSorteadas);
-            io.emit('alerta_proximidade', alertas);
+            let alertas = [];
+            cartelas.forEach(cartela => {
+                let faltam = cartela.numeros.filter(n => !pedrasSorteadas.includes(n)).length;
+                if (faltam <= 1) alertas.push({ tabela: cartela.tabela || cartela.id, nome: cartela.nome || "Jogador", faltam: faltam, bingo: faltam === 0 });
+            });
+            if (alertas.length > 0) io.emit('alerta_proximidade', alertas);
+            enviarRanking();
         }
     });
 
-    socket.on('registrar_cartela', async (dados) => {
-        const id = await dbHelper.salvarCartela(dados.nome, dados.numeros);
-        const listaAtualizada = await dbHelper.getCartelas();
-        cartelas = listaAtualizada;
-        io.emit('lista_cartelas', listaAtualizada);
+    socket.on('buscar_cartela', (idBuscado) => {
+        const cartela = cartelas.find(c => c.tabela == idBuscado || c.id == idBuscado);
+        if (cartela) socket.emit('retorno_cartela', { id: cartela.tabela || cartela.id, numeros: cartela.numeros });
+        else socket.emit('retorno_cartela', null);
     });
 
-    socket.on('excluir_cartela', (id) => {
-        cartelas = cartelas.filter(c => c.id !== id);
-        dbHelper.db.run("DELETE FROM cartelas WHERE id = ?", [id]);
-        io.emit('lista_cartelas', cartelas);
-    });
-
-    socket.on('limpar_jogo', () => {
+    socket.on('resetar', () => {
         pedrasSorteadas = [];
-        dbHelper.db.run("DELETE FROM sorteio");
-        io.emit('init', { pedrasSorteadas: [], cartelas: [] });
+        io.emit('reseta_jogo');
+        enviarRanking(); 
     });
 });
 
-const PORT = 5000;
-server.listen(PORT, () => console.log(`🧠 Servidor rodando na ${PORT}`));
+server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando na porta 5001 com Upload Automático!`); });
