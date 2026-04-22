@@ -8,6 +8,16 @@ const socket: Socket = io(BACKEND_URL);
 interface Alerta { tabela: number; nome: string; faltam: number; bingo?: boolean; }
 
 export default function Telao() {
+  // 🔥 TRAVA DE SEGURANÇA NATIVA CONTRA FECHAMENTO (F5 ou X) 🔥
+  useEffect(() => {
+    const travaAba = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ''; 
+    };
+    window.addEventListener('beforeunload', travaAba);
+    return () => window.removeEventListener('beforeunload', travaAba);
+  }, []);
+
   const [sorteados, setSorteados] = useState<number[]>([]);
   const [alertas, setAlertas] = useState<Alerta[]>([]);
   const [pedraDestaque, setPedraDestaque] = useState<number | null>(null);
@@ -101,12 +111,11 @@ export default function Telao() {
         
         .sponsor-list-wrapper { display: flex; flex-direction: column; gap: 15px; width: 100%; align-items: center; overflow-y: auto; flex: 1; padding-right: 5px; }
         
-        /* 🔥 CAIXA INTELIGENTE QUE SE ADAPTA AO CONTEÚDO 🔥 */
         .sponsor-card {
             border-radius: 20px;
-            width: auto; /* Não estica 100% da tela sozinho */
+            width: auto; 
             min-width: 280px;
-            max-width: 100%; /* Mas nunca ultrapassa a tela */
+            max-width: 100%; 
             display: flex;
             position: relative;
             overflow: hidden;
@@ -114,7 +123,6 @@ export default function Telao() {
             transition: 0.4s;
         }
 
-        /* 1. NOVO MODO PADRÃO: VIDRO + BRASÃO ABSTRATO FUNDO + BRASÃO FIXO */
         .default-mode {
             background: rgba(255, 255, 255, 0.05);
             backdrop-filter: blur(20px) saturate(180%);
@@ -132,13 +140,12 @@ export default function Telao() {
             z-index: 0;
         }
         
-        /* Marca d'água abstrata ao fundo */
         .bg-watermark {
             position: absolute;
             inset: -20%;
             background: url('/sjo.png') no-repeat center center;
             background-size: 50%; 
-            opacity: 0.06; /* Suave para não roubar a atenção do brasão fixo */
+            opacity: 0.06; 
             filter: grayscale(100%) blur(2px);
             z-index: 0;
             transform: rotate(-10deg);
@@ -154,7 +161,7 @@ export default function Telao() {
         .default-mode .sponsor-name {
             position: relative;
             z-index: 2;
-            color: #FFD700;
+            color: #ffffff; 
             font-weight: 900;
             text-transform: uppercase;
             text-align: left;
@@ -162,7 +169,7 @@ export default function Telao() {
             line-height: 1.2;
         }
         
-        .default-mode.sidebar-size { width: 100%; justify-content: flex-start; } /* Na sidebar fica melhor 100% */
+        .default-mode.sidebar-size { width: 100%; justify-content: flex-start; } 
         .default-mode.sidebar-size .sponsor-name { font-size: 16px; }
         .default-mode.sidebar-size .fixed-brasao { height: 45px; }
 
@@ -170,7 +177,6 @@ export default function Telao() {
         .default-mode.popup-size .sponsor-name { font-size: 32px; }
         .default-mode.popup-size .fixed-brasao { height: 90px; }
 
-        /* 2. MODO PERSONALIZADO: AURA DINÂMICA */
         .custom-mode {
             background: #111; 
             border: 1px solid rgba(255,255,255,0.1);
@@ -190,7 +196,7 @@ export default function Telao() {
         .custom-mode img, .custom-mode .sponsor-name { position: relative; z-index: 1; }
         .custom-mode img { object-fit: contain; border-radius: 12px; }
         .custom-mode .sponsor-name {
-            color: #ffffff;
+            color: #ffffff; 
             font-weight: 900;
             text-transform: uppercase;
             text-align: center;
@@ -198,7 +204,7 @@ export default function Telao() {
             line-height: 1.1;
         }
 
-        .custom-mode.sidebar-size { padding: 15px; gap: 12px; width: 100%; } /* Sidebar 100% */
+        .custom-mode.sidebar-size { padding: 15px; gap: 12px; width: 100%; } 
         .custom-mode.sidebar-size img { max-height: 85px; max-width: 100%; }
         .custom-mode.sidebar-size .sponsor-name { font-size: 15px; }
 

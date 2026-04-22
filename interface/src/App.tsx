@@ -13,6 +13,20 @@ const socket: Socket = io(BACKEND_URL);
 interface RankingItem { tabela: number; faltam: number; numeros: number[]; }
 
 export default function App() {
+  // 🔥 TRAVA DE SEGURANÇA NATIVA CONTRA FECHAMENTO (F5 ou X) 🔥
+  useEffect(() => {
+    const travaAba = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ''; 
+    };
+    window.addEventListener('beforeunload', travaAba);
+    return () => window.removeEventListener('beforeunload', travaAba);
+  }, []);
+
+  const [senhaReiniciar, setSenhaReiniciar] = useState('');
+  const [nomeRodada, setNomeRodada] = useState('');
+  const [dadosRelatorioFinal, setDadosRelatorioFinal] = useState<{titulo: string, sorteados: number[], data: string} | null>(null);
+
   const [pedraInput, setPedraInput] = useState('');
   const [sorteados, setSorteados] = useState<number[]>([]);
   const [conectado, setConectado] = useState(false);
@@ -31,7 +45,6 @@ export default function App() {
   const [arquivosUpload, setArquivosUpload] = useState<{ [index: number]: File | null }>({});
   const [imgVersion, setImgVersion] = useState(Date.now());
 
-  // Relatórios e Impressão
   const [relatorioData, setRelatorioData] = useState<{sorteados: number[], patrocinadores: {pedra: string, nome: string, statusImagem: string}[]} | null>(null);
   const [filtroRelatorio, setFiltroRelatorio] = useState<'todos' | 'personalizada' | 'padrao'>('todos');
   const [printScope, setPrintScope] = useState<'tudo' | 'numeros' | 'patrocinadores'>('tudo');
@@ -97,7 +110,22 @@ export default function App() {
   const confirmarEnvio = () => { if (modalConfirmar !== null) enviarDireto(modalConfirmar); };
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && usarEnter && currentView === 'sorteio') { if (modalConfirmar !== null) confirmarEnvio(); else processarEnvio(); } };
   const buscarCartela = (e: React.FormEvent) => { e.preventDefault(); if (!buscaInput) return; setCartelaBuscada(null); socket.emit('buscar_cartela', buscaInput); };
-  const confirmarReiniciar = () => { socket.emit('resetar'); };
+  
+  // 🔥 LÓGICA ÚNICA DE IMPRIMIR E ZERAR 🔥
+  const handleImprimirEReiniciar = () => {
+    const dataHora = new Date().toLocaleString('pt-BR');
+    setDadosRelatorioFinal({ titulo: nomeRodada, sorteados: [...sorteados], data: dataHora });
+    
+    setTimeout(() => {
+      window.print();
+      
+      socket.emit('resetar'); 
+      setDadosRelatorioFinal(null); 
+      setModalReiniciar(false);
+      setSenhaReiniciar('');
+      setNomeRodada('');
+    }, 500);
+  };
 
   const totalPages = Math.ceil(ranking.length / ITEMS_PER_PAGE);
   const currentRanking = ranking.slice(rankingPage * ITEMS_PER_PAGE, (rankingPage + 1) * ITEMS_PER_PAGE);
@@ -133,11 +161,9 @@ export default function App() {
     if (!editandoNum) return;
     socket.emit('remover_imagem_patrocinador', { numero: editandoNum, index });
     setImgVersion(Date.now());
-    
     const novosArquivos = {...arquivosUpload};
     delete novosArquivos[index];
     setArquivosUpload(novosArquivos);
-
     setModalAviso({ titulo: 'Imagem Removida', msg: 'A imagem foi apagada. O Telão voltará a exibir o Brasão da Paróquia para esta loja.', tipo: 'sucesso' });
   };
 
@@ -170,18 +196,12 @@ export default function App() {
   };
 
   const pedirRelatorio = () => { socket.emit('pedir_relatorio'); };
-  
-  // Função que gerencia o escopo da impressão (Tudo, só números, só patros)
-  const handlePrint = (escopo: 'tudo' | 'numeros' | 'patrocinadores') => {
-    setPrintScope(escopo);
-    setTimeout(() => { window.print(); }, 100);
-  };
+  const handlePrint = (escopo: 'tudo' | 'numeros' | 'patrocinadores') => { setPrintScope(escopo); setTimeout(() => { window.print(); }, 100); };
 
-  // Filtra os patrocinadores baseado na seleção
   const patrocinadoresFiltrados = relatorioData?.patrocinadores.filter(p => {
     if (filtroRelatorio === 'personalizada') return p.statusImagem.includes('Personalizada');
     if (filtroRelatorio === 'padrao') return p.statusImagem.includes('Brasão');
-    return true; // 'todos'
+    return true; 
   }) || [];
 
   return (
@@ -290,19 +310,17 @@ export default function App() {
         .btn-remove { background: #ef4444; color: #fff; border: none; padding: 10px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
         .btn-remove:hover { background: #dc2626; }
 
-        /* Tabelas de Relatório (Ajustadas com fonte menor) */
         .report-table { width: 100%; border-collapse: collapse; margin-top: 15px; background: #0f172a; border-radius: 8px; overflow: hidden; }
-        .report-table th, .report-table td { border: 1px solid #334155; padding: 10px 12px; text-align: left; font-size: 12px; } /* Fonte reduzida para 12px */
+        .report-table th, .report-table td { border: 1px solid #334155; padding: 10px 12px; text-align: left; font-size: 12px; } 
         .report-table th { background: #1e293b; color: #94a3b8; font-weight: 800; text-transform: uppercase; }
         .report-table td { color: #f8fafc; font-weight: 600; }
         
-        /* Botões de Filtro */
         .filter-btn { padding: 8px 15px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; border: 1px solid #475569; transition: 0.2s; display: flex; align-items: center; gap: 6px; }
 
         .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(5px); }
-        .modal { background: #1e293b; border: 1px solid #475569; padding: 40px; border-radius: 16px; text-align: center; width: 90%; max-width: 450px; box-shadow: 0 25px 50px rgba(0,0,0,0.5); }
+        .modal { background: #1e293b; border: 1px solid #475569; padding: 40px; border-radius: 16px; text-align: center; width: 90%; max-width: 500px; box-shadow: 0 25px 50px rgba(0,0,0,0.5); }
         .modal h2 { font-size: 24px; font-weight: 800; margin-bottom: 15px; color: #f8fafc; }
-        .modal p { font-size: 16px; color: #94a3b8; margin-bottom: 30px; line-height: 1.5; }
+        .modal p { font-size: 14px; color: #94a3b8; margin-bottom: 25px; line-height: 1.5; }
         .modal-btns { display: flex; gap: 15px; justify-content: center; }
         .btn-m { padding: 15px 25px; border-radius: 8px; font-weight: 700; cursor: pointer; border: none; font-size: 14px; flex: 1; transition: 0.2s; }
         .btn-action { background: #3b82f6; color: #fff; }
@@ -311,21 +329,106 @@ export default function App() {
         .btn-light { background: #334155; color: #f8fafc; }
         .btn-light:hover { background: #475569; }
 
-        /* 🔥 CSS FANTASMA PARA IMPRESSÃO INDIVIDUAL PERFEITA 🔥 */
+        /* 🔥 NOVO ESTILO DO RELATÓRIO FINAL: MINIMALISTA, CORPORATIVO E DETALHADO 🔥 */
+        .endgame-print-view {
+            background: white;
+            color: #1a1a1a;
+            min-height: 100vh;
+            width: 100vw;
+            padding: 40px;
+            font-family: 'Inter', sans-serif;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 9999;
+        }
+
+        .print-header-modern {
+            display: flex;
+            align-items: center;
+            border-bottom: 2px solid #e5e7eb;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .print-header-modern img { max-height: 80px; margin-right: 20px; }
+        .header-text { text-align: left; }
+        .header-text h1 { font-size: 22px; font-weight: 800; margin: 0 0 5px 0; color: #111827; letter-spacing: -0.5px; }
+        .header-text p { font-size: 12px; font-weight: 600; color: #6b7280; margin: 0; text-transform: uppercase; letter-spacing: 1px; }
+
+        .print-meta-modern {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        .meta-box {
+            flex: 1;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .meta-box span { font-size: 11px; font-weight: 700; color: #6b7280; text-transform: uppercase; }
+        .meta-box strong { font-size: 16px; font-weight: 800; color: #111827; }
+
+        .print-body-modern h3 {
+            font-size: 14px;
+            font-weight: 700;
+            color: #374151;
+            text-transform: uppercase;
+            margin-bottom: 15px;
+            border-bottom: 1px solid #e5e7eb;
+            padding-bottom: 8px;
+        }
+
+        .numbers-flow-modern {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 50px;
+        }
+        .num-modern-badge {
+            width: 45px;
+            height: 45px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 18px;
+            font-weight: 700;
+            color: #111827;
+            background: #ffffff;
+        }
+
+        .print-footer-modern {
+            margin-top: 60px;
+            padding-top: 20px;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+        .print-footer-modern p { font-size: 11px; color: #9ca3af; margin: 0; }
+        .signature-area { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 300px; }
+        .signature-line { width: 100%; border-top: 1px solid #111827; margin-bottom: 5px; }
+        .signature-area span { font-size: 12px; font-weight: 600; color: #374151; }
+
         .print-logo-header { display: none; }
+        
         @media print {
           body { background: white !important; color: black !important; }
           .sidebar, .top-bar, .nav-menu, button, .modal, .overlay, .conn-footer, .print-hide { display: none !important; }
           .main-content { overflow: visible !important; background: white !important; display: block !important; }
           .content-area { padding: 0 !important; display: block !important; }
           .conf-panel { border: none !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; background: white !important; box-shadow: none !important; }
-          * { color: black !important; text-shadow: none !important; }
+          * { text-shadow: none !important; }
           
-          /* Lógica de ocultação condicional baseada no atributo data-print */
           .conf-panel[data-print="numeros"] .print-section-patrocinadores { display: none !important; }
           .conf-panel[data-print="patrocinadores"] .print-section-numeros { display: none !important; }
           
-          /* Trazendo a imagem da paróquia para o topo do papel */
           .print-logo-header { display: block !important; text-align: center; margin-bottom: 30px; border-bottom: 2px solid black; padding-bottom: 20px; }
           .print-logo-header img { max-height: 100px; margin-bottom: 10px; }
           .print-logo-header h2 { font-size: 24px; margin: 0; text-transform: uppercase; }
@@ -338,7 +441,8 @@ export default function App() {
         }
       `}</style>
 
-      <div className="app-container">
+      {/* PAINEL NORMAL */}
+      <div className="app-container" style={{ display: dadosRelatorioFinal ? 'none' : 'flex' }}>
         <aside className="sidebar">
           <div className="brand-area">
             <img src="/sjo.png" alt="SJO" className="brand-logo" onError={(e) => e.currentTarget.style.display = 'none'} />
@@ -564,11 +668,10 @@ export default function App() {
               </div>
             )}
 
-            {/* VIEW RELATÓRIOS (REFORMULADA COM IMPRESSÃO INDIVIDUAL E FILTROS) */}
+            {/* VIEW RELATÓRIOS */}
             {currentView === 'relatorios' && (
               <div className="conf-panel" data-print={printScope} style={{maxWidth: '900px'}}>
                 
-                {/* CABEÇALHO FANTASMA PARA IMPRESSÃO (Brasão da Paróquia) */}
                 <div className="print-logo-header">
                   <img src="/sjo.png" alt="SJO" />
                   <h2>Relatório Oficial do Bingo</h2>
@@ -591,7 +694,6 @@ export default function App() {
                   <div style={{color: '#94a3b8', textAlign: 'center', padding: '30px'}} className="print-hide">Clique em "Atualizar Dados" para carregar o relatório.</div>
                 ) : (
                   <>
-                    {/* SESSÃO 1: NÚMEROS */}
                     <div className="print-section-numeros">
                       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '20px', marginBottom: '10px'}}>
                         <h4 style={{color: '#FFD700', margin: 0}}>1. Números Sorteados ({relatorioData.sorteados.length})</h4>
@@ -605,7 +707,6 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* SESSÃO 2: PATROCINADORES */}
                     <div className="print-section-patrocinadores">
                       <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '40px', marginBottom: '15px'}}>
                         <h4 style={{color: '#FFD700', margin: 0}}>2. Status de Patrocinadores ({patrocinadoresFiltrados.length})</h4>
@@ -614,7 +715,6 @@ export default function App() {
                         </button>
                       </div>
 
-                      {/* FILTROS (Escondidos na impressão) */}
                       <div className="print-hide" style={{display: 'flex', gap: '10px', marginBottom: '15px', flexWrap: 'wrap'}}>
                         <div style={{color: '#94a3b8', fontSize: '12px', display: 'flex', alignItems: 'center', marginRight: '5px'}}><Filter size={14} style={{marginRight: '5px'}}/> Filtrar Tabela:</div>
                         <button className="filter-btn" style={{background: filtroRelatorio === 'todos' ? '#3b82f6' : 'transparent', color: filtroRelatorio === 'todos' ? '#fff' : '#94a3b8'}} onClick={() => setFiltroRelatorio('todos')}>
@@ -668,7 +768,6 @@ export default function App() {
                   Tempo do Popup no Telão: <input type="number" className="time-input" min="1" max="30" value={tempoPopup} onChange={handleTempoChange} /> seg
                 </label>
 
-                {/* VISUALIZAÇÃO DO RANKING */}
                 <h3 style={{color: '#94a3b8', marginTop: '40px', marginBottom: '20px', borderBottom: '1px solid #334155', paddingBottom: '10px'}}>O que mostrar no Ranking (Painel Lateral)?</h3>
                 
                 <label className="config-item" style={{marginBottom: '10px'}}>
@@ -703,6 +802,51 @@ export default function App() {
         </main>
       </div>
 
+      {/* 🔥 TELA BRANCA ESCONDIDA: RELATÓRIO FINAL MINIMALISTA E MODERNO 🔥 */}
+      {dadosRelatorioFinal && (
+        <div className="endgame-print-view">
+          <div className="print-header-modern">
+            <img src="/sjo.png" alt="SJO" />
+            <div className="header-text">
+              <h1>Relatório de Encerramento de Rodada</h1>
+              <p>Paróquia São José Operário • Bingo Digital</p>
+            </div>
+          </div>
+          
+          <div className="print-meta-modern">
+            <div className="meta-box">
+              <span>Referência / Prêmio</span>
+              <strong>{dadosRelatorioFinal.titulo.toUpperCase()}</strong>
+            </div>
+            <div className="meta-box">
+              <span>Data e Hora de Geração</span>
+              <strong>{dadosRelatorioFinal.data}</strong>
+            </div>
+            <div className="meta-box">
+              <span>Total de Pedras Sorteadas</span>
+              <strong>{dadosRelatorioFinal.sorteados.length} / 100</strong>
+            </div>
+          </div>
+
+          <div className="print-body-modern">
+            <h3>Histórico de Pedras Sorteadas (Ordem Cronológica)</h3>
+            <div className="numbers-flow-modern">
+              {dadosRelatorioFinal.sorteados.map((n, i) => (
+                <div key={i} className="num-modern-badge">{n < 10 ? `0${n}` : n}</div>
+              ))}
+            </div>
+          </div>
+
+          <div className="print-footer-modern">
+            <p>Documento gerado e autenticado automaticamente pelo Sistema S.J.O.</p>
+            <div className="signature-area">
+              <div className="signature-line"></div>
+              <span>Assinatura do Auditor / Responsável</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {modalAviso && (
         <div className="overlay" onClick={() => setModalAviso(null)}>
           <div className="modal">
@@ -714,14 +858,45 @@ export default function App() {
         </div>
       )}
 
+      {/* 🔥 MODAL DE REINICIAR (SÓ IMPRIMIR E ZERAR) 🔥 */}
       {modalReiniciar && (
         <div className="overlay">
           <div className="modal">
-            <h2>Reiniciar Jogo?</h2>
-            <p>Isso apagará todo o histórico e ranking da rodada.</p>
+            <h2>Encerrar Rodada?</h2>
+            <p style={{fontSize: '14px', marginBottom: '20px'}}>
+              A única forma de encerrar uma rodada é imprimindo seu relatório final. Dê um nome ao prêmio e confirme sua senha.
+            </p>
+            
+            <input 
+              type="text" 
+              className="pat-input" 
+              style={{marginBottom: '15px', textAlign: 'center', fontSize: '15px'}}
+              value={nomeRodada} 
+              onChange={(e) => setNomeRodada(e.target.value)} 
+              placeholder="NOME DO PRÊMIO (Ex: 1º Prêmio - TV)"
+            />
+
+            <input 
+              type="text" 
+              className="pat-input" 
+              style={{marginBottom: '25px', textAlign: 'center', fontSize: '18px', textTransform: 'uppercase'}}
+              value={senhaReiniciar} 
+              onChange={(e) => setSenhaReiniciar(e.target.value.toLowerCase())} 
+              placeholder="DIGITE BINGO PARA CONFIRMAR"
+            />
+
             <div className="modal-btns">
-              <button className="btn-m btn-light" onClick={() => setModalReiniciar(false)}>Cancelar</button>
-              <button className="btn-m btn-danger-action" onClick={confirmarReiniciar}>Confirmar</button>
+              <button className="btn-m btn-light" onClick={() => { setModalReiniciar(false); setSenhaReiniciar(''); setNomeRodada(''); }}>
+                Cancelar
+              </button>
+              <button 
+                className="btn-m btn-action" 
+                disabled={senhaReiniciar !== 'bingo' || nomeRodada.trim() === ''} 
+                style={{opacity: (senhaReiniciar === 'bingo' && nomeRodada.trim() !== '') ? 1 : 0.5}} 
+                onClick={handleImprimirEReiniciar}
+              >
+                🖨️ Imprimir e Encerrar
+              </button>
             </div>
           </div>
         </div>
