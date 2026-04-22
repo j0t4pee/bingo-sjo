@@ -3,7 +3,8 @@ import { io, Socket } from 'socket.io-client';
 import { 
   Wifi, WifiOff, RotateCcw, Play, AlertCircle, 
   HelpCircle, Search, Ticket, LayoutDashboard, Settings, 
-  ChevronLeft, ChevronRight, ChevronDown, Store, Plus, Trash2, Save, Upload, X, CheckCircle, Monitor
+  ChevronLeft, ChevronRight, ChevronDown, Store, Plus, Trash2, Save, Upload, X, CheckCircle, Monitor,
+  Copy, FileText, ImageOff, Printer, Image as ImageIcon, Filter
 } from 'lucide-react';
 
 const BACKEND_URL = 'http://localhost:5001';
@@ -18,14 +19,22 @@ export default function App() {
   const [ranking, setRanking] = useState<RankingItem[]>([]);
   const [expandedRankingId, setExpandedRankingId] = useState<number | null>(null);
   
-  const [currentView, setCurrentView] = useState<'sorteio' | 'conferencia' | 'patrocinadores' | 'config'>('sorteio');
+  const [currentView, setCurrentView] = useState<'sorteio' | 'conferencia' | 'patrocinadores' | 'relatorios' | 'config'>('sorteio');
+
+  const [rastrearTodas, setRastrearTodas] = useState(true);
+  const [listaCartelasStr, setListaCartelasStr] = useState('');
 
   const [patrocinadores, setPatrocinadores] = useState<Record<string, string | string[]>>({});
   const [patrocinadorNum, setPatrocinadorNum] = useState('');
   const [editandoNum, setEditandoNum] = useState<string | null>(null); 
   const [nomesEditando, setNomesEditando] = useState<string[]>([]);
   const [arquivosUpload, setArquivosUpload] = useState<{ [index: number]: File | null }>({});
-  const [imgVersion, setImgVersion] = useState(Date.now()); // Para forçar atualização visual
+  const [imgVersion, setImgVersion] = useState(Date.now());
+
+  // Relatórios e Impressão
+  const [relatorioData, setRelatorioData] = useState<{sorteados: number[], patrocinadores: {pedra: string, nome: string, statusImagem: string}[]} | null>(null);
+  const [filtroRelatorio, setFiltroRelatorio] = useState<'todos' | 'personalizada' | 'padrao'>('todos');
+  const [printScope, setPrintScope] = useState<'tudo' | 'numeros' | 'patrocinadores'>('tudo');
 
   const [pedirConfirmacao, setPedirConfirmacao] = useState(true);
   const [usarEnter, setUsarEnter] = useState(true);
@@ -42,23 +51,31 @@ export default function App() {
   const [cartelaBuscada, setCartelaBuscada] = useState<{ id: string, numeros: number[] } | null | 'not_found'>(null);
 
   useEffect(() => {
+    document.title = "Painel Admin - Bingo S.J.O.";
     socket.on('connect', () => setConectado(true));
     socket.on('disconnect', () => setConectado(false));
     
     socket.on('init', (data: any) => {
       setSorteados(data.pedrasSorteadas || []);
       setPatrocinadores(data.patrocinadores || {});
+      if (data.rastreioConfig) {
+        setRastrearTodas(data.rastreioConfig.todas);
+        setListaCartelasStr(data.rastreioConfig.lista.join(', '));
+      }
+      socket.emit('pedir_relatorio'); 
     });
 
     socket.on('patrocinadores_atualizados', (novos) => {
       setPatrocinadores(novos);
       setImgVersion(Date.now());
+      socket.emit('pedir_relatorio'); 
     });
     
     socket.on('pedra_sorteada', (n: number) => setSorteados(prev => [...prev, n]));
     socket.on('ranking_update', (data: RankingItem[]) => setRanking(data));
-    socket.on('reseta_jogo', () => { setSorteados([]); setCartelaBuscada(null); setModalReiniciar(false); setRanking([]); setExpandedRankingId(null); });
+    socket.on('reseta_jogo', () => { setSorteados([]); setCartelaBuscada(null); setModalReiniciar(false); setRanking([]); setExpandedRankingId(null); setRelatorioData(null); });
     socket.on('retorno_cartela', (data: any) => { if (data) setCartelaBuscada(data); else setCartelaBuscada('not_found'); });
+    socket.on('retorno_relatorio', (data: any) => setRelatorioData(data));
 
     const savedTime = localStorage.getItem('popupDuration');
     if (savedTime) setTempoPopup(Number(savedTime));
@@ -86,28 +103,47 @@ export default function App() {
   const currentRanking = ranking.slice(rankingPage * ITEMS_PER_PAGE, (rankingPage + 1) * ITEMS_PER_PAGE);
   const changePage = (dir: number) => { setRankingPage(p => p + dir); setExpandedRankingId(null); };
 
+  const salvarConfigRastreio = () => {
+    const arr = listaCartelasStr.split(/[\n,]+/).map(s => s.trim()).filter(s => s !== '');
+    socket.emit('configurar_rastreio', { todas: rastrearTodas, lista: arr });
+    setModalAviso({ titulo: 'Lista Salva', msg: `O painel principal agora exibirá a conferência de ${arr.length} cartelas individuais.`, tipo: 'sucesso' });
+  };
+
+  const copiarSorteados = () => {
+    const texto = sorteados.map(n => n < 10 ? `0${n}` : n).join(', ');
+    navigator.clipboard.writeText(texto);
+    setModalAviso({ titulo: 'Copiado!', msg: 'Os números sorteados foram copiados para sua área de transferência.', tipo: 'sucesso' });
+  };
+
   const buscarPatrocinadorNum = (numToSearch?: string) => {
     const num = typeof numToSearch === 'string' ? numToSearch : patrocinadorNum;
     if(!num) return;
-    
     setEditandoNum(num);
     setPatrocinadorNum(''); 
     const patros = patrocinadores[num];
     setArquivosUpload({});
-
     if (!patros) setNomesEditando(['']); 
     else if (Array.isArray(patros)) setNomesEditando(patros);
     else setNomesEditando([patros]);
   };
 
-  const lidarComArquivo = (index: number, file: File | null) => {
-      setArquivosUpload(prev => ({ ...prev, [index]: file }));
+  const lidarComArquivo = (index: number, file: File | null) => { setArquivosUpload(prev => ({ ...prev, [index]: file })); };
+
+  const removerImagemPatrocinador = (index: number) => {
+    if (!editandoNum) return;
+    socket.emit('remover_imagem_patrocinador', { numero: editandoNum, index });
+    setImgVersion(Date.now());
+    
+    const novosArquivos = {...arquivosUpload};
+    delete novosArquivos[index];
+    setArquivosUpload(novosArquivos);
+
+    setModalAviso({ titulo: 'Imagem Removida', msg: 'A imagem foi apagada. O Telão voltará a exibir o Brasão da Paróquia para esta loja.', tipo: 'sucesso' });
   };
 
   const salvarPatrocinadoresLocal = async () => {
     if(!editandoNum) return;
     const nomesFinais = nomesEditando.filter(n => n.trim() !== '');
-    
     let novoObjeto = { ...patrocinadores };
     if (nomesFinais.length === 0) delete novoObjeto[editandoNum];
     else if (nomesFinais.length === 1) novoObjeto[editandoNum] = nomesFinais[0];
@@ -120,32 +156,40 @@ export default function App() {
         const file = arquivosUpload[key];
         if (file) {
             const formData = new FormData();
-            
-            // 🔥 A MÁGICA ESTÁ AQUI: O texto precisa ir ANTES da imagem!
             formData.append('numero', editandoNum);
             formData.append('index', key);
             formData.append('imagem', file);
-
-            try { await fetch(`${BACKEND_URL}/upload`, { method: 'POST', body: formData }); } 
-            catch (err) { console.error("Erro ao enviar", err); }
+            try { await fetch(`${BACKEND_URL}/upload`, { method: 'POST', body: formData }); } catch (err) { console.error("Erro ao enviar", err); }
         }
     }
-
     setArquivosUpload({});
     setEditandoNum(null);
-    setImgVersion(Date.now()); // Isso avisa o telão para piscar e atualizar na hora!
-    setModalAviso({ titulo: 'Sucesso!', msg: 'Nomes e imagens salvos com sucesso! O Telão já foi atualizado.', tipo: 'sucesso' });
+    setImgVersion(Date.now());
+    socket.emit('pedir_relatorio'); 
+    setModalAviso({ titulo: 'Sucesso!', msg: 'Nomes e imagens salvos com sucesso!', tipo: 'sucesso' });
   };
+
+  const pedirRelatorio = () => { socket.emit('pedir_relatorio'); };
+  
+  // Função que gerencia o escopo da impressão (Tudo, só números, só patros)
+  const handlePrint = (escopo: 'tudo' | 'numeros' | 'patrocinadores') => {
+    setPrintScope(escopo);
+    setTimeout(() => { window.print(); }, 100);
+  };
+
+  // Filtra os patrocinadores baseado na seleção
+  const patrocinadoresFiltrados = relatorioData?.patrocinadores.filter(p => {
+    if (filtroRelatorio === 'personalizada') return p.statusImagem.includes('Personalizada');
+    if (filtroRelatorio === 'padrao') return p.statusImagem.includes('Brasão');
+    return true; // 'todos'
+  }) || [];
 
   return (
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-        
         * { box-sizing: border-box; margin: 0; padding: 0; outline: none; font-family: 'Inter', sans-serif; }
         body { background: #0f172a; color: #f8fafc; height: 100vh; overflow: hidden; }
-        
-        /* ESTILIZAÇÃO DA SCROLLBAR */
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #0f172a; }
         ::-webkit-scrollbar-thumb { background: #3b82f6; border-radius: 4px; }
@@ -158,7 +202,7 @@ export default function App() {
         .brand-title { font-size: 16px; font-weight: 800; color: #f8fafc; text-transform: uppercase; line-height: 1.2; }
         .brand-subtitle { font-size: 11px; color: #94a3b8; letter-spacing: 1px; }
         
-        .nav-menu { flex: 1; padding: 20px 10px; display: flex; flex-direction: column; gap: 8px; }
+        .nav-menu { flex: 1; padding: 20px 10px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
         .nav-item { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-radius: 12px; font-size: 14px; font-weight: 600; color: #94a3b8; cursor: pointer; transition: 0.2s; }
         .nav-item:hover { background: #334155; color: #f8fafc; }
         .nav-item.active { background: #3b82f6; color: #ffffff; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3); }
@@ -183,7 +227,9 @@ export default function App() {
         .btn-send:hover { background: #2563eb; }
 
         .history-card { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 25px; flex: 1; }
-        .history-title { font-size: 14px; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #334155; padding-bottom: 10px; }
+        .history-title { font-size: 14px; font-weight: 700; color: #94a3b8; text-transform: uppercase; margin-bottom: 15px; border-bottom: 1px solid #334155; padding-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .btn-copy { background: #334155; border: none; padding: 6px 12px; border-radius: 6px; color: #f8fafc; cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; transition: 0.2s; }
+        .btn-copy:hover { background: #475569; }
         .nums-flow { font-size: 24px; font-weight: 700; line-height: 1.8; color: #e2e8f0; }
         .comma { color: #64748b; margin: 0 5px; }
 
@@ -210,6 +256,7 @@ export default function App() {
 
         .config-panel, .conf-panel { background: #1e293b; border: 1px solid #334155; border-radius: 16px; padding: 40px; width: 100%; max-width: 750px; margin-top: 20px; }
         .config-item { display: flex; align-items: center; gap: 12px; font-size: 16px; font-weight: 600; color: #e2e8f0; margin-bottom: 25px; cursor: pointer; }
+        .config-item input[type="radio"] { width: 20px; height: 20px; accent-color: #3b82f6; cursor: pointer; }
         .config-item input[type="checkbox"] { width: 20px; height: 20px; accent-color: #3b82f6; cursor: pointer; }
         .time-input { background: #0f172a; border: 1px solid #475569; color: #fff; width: 60px; text-align: center; border-radius: 6px; padding: 8px; font-size: 16px; font-weight: 700; margin: 0 10px; }
 
@@ -225,12 +272,9 @@ export default function App() {
         .num-cartela.hit { background: #3b82f6; color: #ffffff; border-color: #2563eb; }
 
         .patrocinador-list { display: flex; flex-direction: column; gap: 15px; margin-top: 20px; }
-        
-        /* NOVO CARD DE PATROCINADOR REFORMULADO */
         .pat-card { display: flex; gap: 20px; background: #0f172a; padding: 15px; border-radius: 12px; border: 1px solid #334155; align-items: center; }
         .pat-img-preview { width: 90px; height: 90px; background: #1e293b; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px dashed #475569; flex-shrink: 0; }
         .pat-img-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
-        
         .pat-info { flex: 1; display: flex; flex-direction: column; gap: 10px; }
         .pat-input { width: 100%; background: #1e293b; border: 1px solid #475569; color: #fff; padding: 12px; border-radius: 8px; font-weight: 600; font-size: 15px; }
         .pat-input:focus { border-color: #3b82f6; }
@@ -246,6 +290,15 @@ export default function App() {
         .btn-remove { background: #ef4444; color: #fff; border: none; padding: 10px; border-radius: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: 0.2s; }
         .btn-remove:hover { background: #dc2626; }
 
+        /* Tabelas de Relatório (Ajustadas com fonte menor) */
+        .report-table { width: 100%; border-collapse: collapse; margin-top: 15px; background: #0f172a; border-radius: 8px; overflow: hidden; }
+        .report-table th, .report-table td { border: 1px solid #334155; padding: 10px 12px; text-align: left; font-size: 12px; } /* Fonte reduzida para 12px */
+        .report-table th { background: #1e293b; color: #94a3b8; font-weight: 800; text-transform: uppercase; }
+        .report-table td { color: #f8fafc; font-weight: 600; }
+        
+        /* Botões de Filtro */
+        .filter-btn { padding: 8px 15px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; border: 1px solid #475569; transition: 0.2s; display: flex; align-items: center; gap: 6px; }
+
         .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); display: flex; align-items: center; justify-content: center; z-index: 1000; backdrop-filter: blur(5px); }
         .modal { background: #1e293b; border: 1px solid #475569; padding: 40px; border-radius: 16px; text-align: center; width: 90%; max-width: 450px; box-shadow: 0 25px 50px rgba(0,0,0,0.5); }
         .modal h2 { font-size: 24px; font-weight: 800; margin-bottom: 15px; color: #f8fafc; }
@@ -257,6 +310,32 @@ export default function App() {
         .btn-danger-action { background: #ef4444; color: #fff; }
         .btn-light { background: #334155; color: #f8fafc; }
         .btn-light:hover { background: #475569; }
+
+        /* 🔥 CSS FANTASMA PARA IMPRESSÃO INDIVIDUAL PERFEITA 🔥 */
+        .print-logo-header { display: none; }
+        @media print {
+          body { background: white !important; color: black !important; }
+          .sidebar, .top-bar, .nav-menu, button, .modal, .overlay, .conn-footer, .print-hide { display: none !important; }
+          .main-content { overflow: visible !important; background: white !important; display: block !important; }
+          .content-area { padding: 0 !important; display: block !important; }
+          .conf-panel { border: none !important; max-width: 100% !important; margin: 0 !important; padding: 0 !important; background: white !important; box-shadow: none !important; }
+          * { color: black !important; text-shadow: none !important; }
+          
+          /* Lógica de ocultação condicional baseada no atributo data-print */
+          .conf-panel[data-print="numeros"] .print-section-patrocinadores { display: none !important; }
+          .conf-panel[data-print="patrocinadores"] .print-section-numeros { display: none !important; }
+          
+          /* Trazendo a imagem da paróquia para o topo do papel */
+          .print-logo-header { display: block !important; text-align: center; margin-bottom: 30px; border-bottom: 2px solid black; padding-bottom: 20px; }
+          .print-logo-header img { max-height: 100px; margin-bottom: 10px; }
+          .print-logo-header h2 { font-size: 24px; margin: 0; text-transform: uppercase; }
+
+          .report-table { border: 1px solid #000 !important; }
+          .report-table th { background: #f0f0f0 !important; color: black !important; border-color: black !important; font-size: 12px !important; }
+          .report-table td { border-color: black !important; color: black !important; font-size: 12px !important; }
+          div[style*="background: #0f172a"] { background: transparent !important; border: 1px solid #000 !important; color: black !important; padding: 10px !important; }
+          h3, h4 { color: black !important; }
+        }
       `}</style>
 
       <div className="app-container">
@@ -277,15 +356,17 @@ export default function App() {
             <div className={`nav-item ${currentView === 'patrocinadores' ? 'active' : ''}`} onClick={() => setCurrentView('patrocinadores')}>
               <Store size={20} /> Patrocinadores
             </div>
+            
+            <div className={`nav-item ${currentView === 'relatorios' ? 'active' : ''}`} onClick={() => { setCurrentView('relatorios'); pedirRelatorio(); }}>
+              <FileText size={20} /> Relatórios
+            </div>
+
             <div className={`nav-item ${currentView === 'config' ? 'active' : ''}`} onClick={() => setCurrentView('config')}>
               <Settings size={20} /> Preferências
             </div>
-            
-            {/* NOVO: BOTÃO DE ABRIR TELÃO */}
             <div className="nav-item special" onClick={() => window.open(window.location.origin + '/telao', '_blank')}>
               <Monitor size={20} /> Abrir Telão
             </div>
-
             <div className="nav-item danger" onClick={() => setModalReiniciar(true)}>
               <RotateCcw size={20} /> Reiniciar Jogo
             </div>
@@ -303,6 +384,7 @@ export default function App() {
               {currentView === 'sorteio' && 'Sorteio em Andamento'}
               {currentView === 'conferencia' && 'Conferência de Cartelas'}
               {currentView === 'patrocinadores' && 'Gerenciamento do Telão'}
+              {currentView === 'relatorios' && 'Relatórios e Dados'}
               {currentView === 'config' && 'Configurações do Sistema'}
             </h1>
           </div>
@@ -317,7 +399,12 @@ export default function App() {
                     <button className="btn-send" onClick={() => processarEnvio()}><Play size={24} fill="currentColor" /> Lançar Pedra</button>
                   </div>
                   <div className="history-card">
-                    <div className="history-title">Histórico ({sorteados.length}/100)</div>
+                    <div className="history-title">
+                      <span>Histórico ({sorteados.length}/100)</span>
+                      <button className="btn-copy" onClick={copiarSorteados}>
+                        <Copy size={14} /> Copiar Números
+                      </button>
+                    </div>
                     <div className="nums-flow">
                       {sorteados.length > 0 
                         ? sorteados.map((n, i) => <span key={i}>{n < 10 ? `0${n}` : n}{i !== sorteados.length - 1 && <span className="comma">,</span>}</span>) 
@@ -327,9 +414,11 @@ export default function App() {
                 </div>
 
                 <aside className="ranking-panel">
-                  <div className="ranking-header">Ranking de Cartelas</div>
+                  <div className="ranking-header">
+                    {rastrearTodas ? "Ranking de Cartelas" : "Consulta Individual"}
+                  </div>
                   <div className="ranking-list">
-                    {ranking.length === 0 && <div style={{textAlign:'center', color:'#64748b', marginTop:'20px', fontSize:'14px'}}>Sem dados no momento...</div>}
+                    {ranking.length === 0 && <div style={{textAlign:'center', color:'#64748b', marginTop:'20px', fontSize:'14px'}}>Nenhuma cartela na lista...</div>}
                     {currentRanking.map((r, i) => {
                       const isExpanded = expandedRankingId === r.tabela;
                       return (
@@ -391,31 +480,42 @@ export default function App() {
               </div>
             )}
 
-            {/* VIEW PATROCINADORES REFORMULADA */}
+            {/* VIEW PATROCINADORES */}
             {currentView === 'patrocinadores' && (
-              <div className="conf-panel">
+              <div className="conf-panel" style={{maxWidth: '850px'}}>
                 <div style={{marginBottom: '35px'}}>
-                  <h3 style={{color: '#94a3b8', fontSize: '13px', textTransform: 'uppercase', marginBottom: '15px', borderBottom: '1px solid #334155', paddingBottom: '10px'}}>
-                    Lista de Patrocinadores Cadastrados
-                  </h3>
-                  
+                  <h3 style={{color: '#94a3b8', fontSize: '13px', textTransform: 'uppercase', marginBottom: '15px', borderBottom: '1px solid #334155', paddingBottom: '10px'}}>Lista de Patrocinadores Cadastrados</h3>
                   {Object.keys(patrocinadores).length === 0 ? (
-                    <div style={{background: '#0f172a', padding: '20px', borderRadius: '8px', border: '1px dashed #475569', color: '#64748b', textAlign: 'center'}}>
-                      Nenhuma marca cadastrada.
-                    </div>
+                    <div style={{background: '#0f172a', padding: '20px', borderRadius: '8px', border: '1px dashed #475569', color: '#64748b', textAlign: 'center'}}>Nenhuma marca cadastrada.</div>
                   ) : (
-                    <div style={{display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '220px', overflowY: 'auto', paddingRight: '5px'}}>
-                      {Object.entries(patrocinadores).map(([num, nomes]) => (
-                        <div key={num} style={{background: '#0f172a', padding: '12px 15px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
-                          <div>
-                            <span style={{color: '#FFD700', fontWeight: '900', marginRight: '10px'}}>Pedra {num}</span>
-                            <span style={{color: '#e2e8f0', fontWeight: '600'}}>{Array.isArray(nomes) ? nomes.join(', ') : nomes}</span>
+                    <div style={{display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '350px', overflowY: 'auto', paddingRight: '5px'}}>
+                      {Object.entries(patrocinadores).map(([num, nomes]) => {
+                        const listaNomes = Array.isArray(nomes) ? nomes : [nomes];
+                        return (
+                          <div key={num} style={{background: '#0f172a', padding: '15px', borderRadius: '10px', border: '1px solid #334155', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                            <div style={{display: 'flex', flexDirection: 'column', gap: '8px'}}>
+                              <div>
+                                <span style={{color: '#FFD700', fontSize: '16px', fontWeight: '900', marginRight: '10px'}}>Pedra {num}</span>
+                                <span style={{color: '#f8fafc', fontSize: '15px', fontWeight: '700'}}>{listaNomes.join(' / ')}</span>
+                              </div>
+                              <div style={{display: 'flex', gap: '8px', flexWrap: 'wrap'}}>
+                                {listaNomes.map((nome, idx) => {
+                                  const isCustom = relatorioData?.patrocinadores.find(p => p.pedra === num && p.nome === nome)?.statusImagem.includes('Personalizada');
+                                  return (
+                                    <span key={idx} style={{
+                                      fontSize: '11px', padding: '4px 8px', borderRadius: '6px', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: '600',
+                                      background: isCustom ? 'rgba(16, 185, 129, 0.15)' : 'rgba(71, 85, 105, 0.3)', color: isCustom ? '#10b981' : '#94a3b8', border: `1px solid ${isCustom ? '#10b981' : '#475569'}`
+                                    }}>
+                                      {isCustom ? <ImageIcon size={12} /> : <ImageOff size={12} />} Mídia {idx + 1}: {isCustom ? 'Imagem Personalizada' : 'Brasão Padrão'}
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                            <button className="btn-search" style={{padding: '8px 20px', fontSize: '13px'}} onClick={() => buscarPatrocinadorNum(num)}>Editar / Ver Foto</button>
                           </div>
-                          <button className="btn-search" style={{padding: '6px 15px', fontSize: '13px'}} onClick={() => buscarPatrocinadorNum(num)}>
-                            Editar / Ver Foto
-                          </button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>
@@ -423,7 +523,7 @@ export default function App() {
                 {!editandoNum ? (
                   <div style={{display: 'flex', gap: '15px', background: '#0f172a', padding: '20px', borderRadius: '12px', border: '1px solid #334155'}}>
                     <div style={{flex: 1}}>
-                      <h4 style={{color: '#94a3b8', marginBottom: '10px', fontSize: '14px'}}>Adicionar Novo Patrocinador:</h4>
+                      <h4 style={{color: '#94a3b8', marginBottom: '10px', fontSize: '14px'}}>Adicionar/Editar Patrocinador:</h4>
                       <div style={{display: 'flex', gap: '10px'}}>
                         <input type="text" inputMode="numeric" className="search-input" style={{padding: '10px', fontSize: '16px'}} placeholder="Nº da Pedra (ex: 15)" value={patrocinadorNum} onChange={(e) => setPatrocinadorNum(e.target.value.replace(/\D/g, ''))} />
                         <button className="btn-search" onClick={() => buscarPatrocinadorNum()}>Configurar Mídia</button>
@@ -434,67 +534,126 @@ export default function App() {
                   <div className="conf-result" style={{background: '#1e293b', padding: '25px', borderRadius: '16px', border: '2px solid #3b82f6'}}>
                     <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px'}}>
                       <h3 style={{color: '#FFD700', margin: 0, fontSize: '24px'}}>Configurando Pedra {editandoNum}</h3>
-                      <button style={{background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer'}} onClick={() => { setEditandoNum(null); setPatrocinadorNum(''); }}>
-                        <X size={24} />
-                      </button>
+                      <button style={{background: 'transparent', border: 'none', color: '#94a3b8', cursor: 'pointer'}} onClick={() => { setEditandoNum(null); setPatrocinadorNum(''); }}><X size={24} /></button>
                     </div>
-                    
                     <div className="patrocinador-list" style={{marginTop: 0}}>
                       {nomesEditando.map((nome, index) => {
-                        // LÓGICA DE PRÉ-VISUALIZAÇÃO DA IMAGEM
-                        const previewSrc = arquivosUpload[index] 
-                          ? URL.createObjectURL(arquivosUpload[index] as File) 
-                          : `${BACKEND_URL}/patrocinadores/${editandoNum}-${index + 1}.png?v=${imgVersion}`;
-
+                        const previewSrc = arquivosUpload[index] ? URL.createObjectURL(arquivosUpload[index] as File) : `${BACKEND_URL}/patrocinadores/${editandoNum}-${index + 1}.png?v=${imgVersion}`;
                         return (
                           <div className="pat-card" key={index}>
-                            {/* CAIXA DA FOTO */}
-                            <div className="pat-img-preview">
-                              <img 
-                                src={previewSrc} 
-                                alt="Logo" 
-                                onError={(e) => { e.currentTarget.src = '/sjo.png'; e.currentTarget.style.opacity = '0.4'; }} 
-                              />
-                            </div>
-                            
-                            {/* ENTRADA DE DADOS */}
+                            <div className="pat-img-preview"><img src={previewSrc} alt="Logo" onError={(e) => { e.currentTarget.src = '/sjo.png'; e.currentTarget.style.opacity = '0.4'; }} /></div>
                             <div className="pat-info">
-                              <input type="text" className="pat-input" value={nome} onChange={(e) => {
-                                const novaLista = [...nomesEditando];
-                                novaLista[index] = e.target.value;
-                                setNomesEditando(novaLista);
-                              }} placeholder="Nome da Loja (ex: Oficina do Zé)" />
-                              
+                              <input type="text" className="pat-input" value={nome} onChange={(e) => { const novaLista = [...nomesEditando]; novaLista[index] = e.target.value; setNomesEditando(novaLista); }} placeholder="Nome da Loja (ex: Oficina do Zé)" />
                               <div style={{display: 'flex', gap: '10px'}}>
                                 <div className="file-upload-wrapper">
-                                  <button className={`btn-upload ${arquivosUpload[index] ? 'has-file' : ''}`}>
-                                      <Upload size={16} /> {arquivosUpload[index] ? 'Pronto para Enviar' : 'Trocar Foto'}
-                                  </button>
-                                  <input type="file" accept="image/png, image/jpeg" onChange={(e) => {
-                                      if (e.target.files && e.target.files[0]) lidarComArquivo(index, e.target.files[0]);
-                                  }} />
+                                  <button className={`btn-upload ${arquivosUpload[index] ? 'has-file' : ''}`}><Upload size={16} /> {arquivosUpload[index] ? 'Pronto para Enviar' : 'Trocar Foto'}</button>
+                                  <input type="file" accept="image/png, image/jpeg" onChange={(e) => { if (e.target.files && e.target.files[0]) lidarComArquivo(index, e.target.files[0]); }} />
                                 </div>
-                                
-                                <button className="btn-remove" onClick={() => {
-                                    setNomesEditando(nomesEditando.filter((_, i) => i !== index));
-                                    const novosArquivos = {...arquivosUpload};
-                                    delete novosArquivos[index];
-                                    setArquivosUpload(novosArquivos);
-                                }}><Trash2 size={18} /></button>
+                                <button className="btn-upload" style={{background: '#ef4444', border: '1px solid #dc2626'}} onClick={() => removerImagemPatrocinador(index)}><ImageOff size={16} /> Apagar Foto</button>
+                                <button className="btn-remove" style={{marginLeft: 'auto'}} onClick={() => { setNomesEditando(nomesEditando.filter((_, i) => i !== index)); const novosArquivos = {...arquivosUpload}; delete novosArquivos[index]; setArquivosUpload(novosArquivos); }}><Trash2 size={18} /></button>
                               </div>
                             </div>
                           </div>
                         );
                       })}
                     </div>
-                    
-                    <button className="btn-add" style={{width: '100%', marginBottom: '20px'}} onClick={() => setNomesEditando([...nomesEditando, ''])}>
-                      <Plus size={18} style={{display: 'inline', verticalAlign: 'middle'}}/> Adicionar Mais Uma Marca Nesta Pedra
+                    <button className="btn-add" style={{width: '100%', marginBottom: '20px'}} onClick={() => setNomesEditando([...nomesEditando, ''])}><Plus size={18} style={{display: 'inline', verticalAlign: 'middle'}}/> Adicionar Mais Uma Marca Nesta Pedra</button>
+                    <button className="btn-action" style={{width: '100%', padding: '20px', borderRadius: '12px', fontSize: '18px', fontWeight: '800'}} onClick={salvarPatrocinadoresLocal}><Save size={24} style={{display: 'inline', verticalAlign: 'middle', marginRight: '8px'}}/> Salvar Tudo e Atualizar Telão</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* VIEW RELATÓRIOS (REFORMULADA COM IMPRESSÃO INDIVIDUAL E FILTROS) */}
+            {currentView === 'relatorios' && (
+              <div className="conf-panel" data-print={printScope} style={{maxWidth: '900px'}}>
+                
+                {/* CABEÇALHO FANTASMA PARA IMPRESSÃO (Brasão da Paróquia) */}
+                <div className="print-logo-header">
+                  <img src="/sjo.png" alt="SJO" />
+                  <h2>Relatório Oficial do Bingo</h2>
+                  <p>Paróquia São José Operário</p>
+                </div>
+
+                <div className="print-hide" style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '1px solid #334155', paddingBottom: '15px'}}>
+                  <h3 style={{color: '#f8fafc', margin: 0}}>Visão Geral do Evento</h3>
+                  <div>
+                    <button className="btn-action" style={{padding: '10px 20px', borderRadius: '8px', fontWeight: '700'}} onClick={pedirRelatorio}>
+                      <RotateCcw size={16} style={{display: 'inline', verticalAlign: 'middle', marginRight: '5px'}}/> Atualizar Dados
                     </button>
-                    <button className="btn-action" style={{width: '100%', padding: '20px', borderRadius: '12px', fontSize: '18px', fontWeight: '800'}} onClick={salvarPatrocinadoresLocal}>
-                      <Save size={24} style={{display: 'inline', verticalAlign: 'middle', marginRight: '8px'}}/> Salvar Tudo e Atualizar Telão
+                    <button className="btn-action" style={{padding: '10px 20px', borderRadius: '8px', fontWeight: '700', marginLeft: '10px', background: '#10b981'}} onClick={() => handlePrint('tudo')}>
+                      <Printer size={16} style={{display: 'inline', verticalAlign: 'middle', marginRight: '5px'}}/> Imprimir Tudo
                     </button>
                   </div>
+                </div>
+
+                {!relatorioData ? (
+                  <div style={{color: '#94a3b8', textAlign: 'center', padding: '30px'}} className="print-hide">Clique em "Atualizar Dados" para carregar o relatório.</div>
+                ) : (
+                  <>
+                    {/* SESSÃO 1: NÚMEROS */}
+                    <div className="print-section-numeros">
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '20px', marginBottom: '10px'}}>
+                        <h4 style={{color: '#FFD700', margin: 0}}>1. Números Sorteados ({relatorioData.sorteados.length})</h4>
+                        <button className="btn-light print-hide" style={{padding: '6px 12px', fontSize: '12px', borderRadius: '6px', cursor: 'pointer', border: 'none'}} onClick={() => handlePrint('numeros')}>
+                          <Printer size={14} style={{display: 'inline', verticalAlign: 'middle', marginRight: '4px'}}/> Imprimir só Números
+                        </button>
+                      </div>
+                      
+                      <div style={{background: '#0f172a', padding: '15px', borderRadius: '8px', border: '1px solid #334155', color: '#e2e8f0', fontSize: '16px', fontWeight: '700', lineHeight: '1.6'}}>
+                        {relatorioData.sorteados.length > 0 ? relatorioData.sorteados.join(', ') : 'Nenhum número sorteado ainda.'}
+                      </div>
+                    </div>
+
+                    {/* SESSÃO 2: PATROCINADORES */}
+                    <div className="print-section-patrocinadores">
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '40px', marginBottom: '15px'}}>
+                        <h4 style={{color: '#FFD700', margin: 0}}>2. Status de Patrocinadores ({patrocinadoresFiltrados.length})</h4>
+                        <button className="btn-light print-hide" style={{padding: '6px 12px', fontSize: '12px', borderRadius: '6px', cursor: 'pointer', border: 'none'}} onClick={() => handlePrint('patrocinadores')}>
+                          <Printer size={14} style={{display: 'inline', verticalAlign: 'middle', marginRight: '4px'}}/> Imprimir só Tabela
+                        </button>
+                      </div>
+
+                      {/* FILTROS (Escondidos na impressão) */}
+                      <div className="print-hide" style={{display: 'flex', gap: '10px', marginBottom: '15px', flexWrap: 'wrap'}}>
+                        <div style={{color: '#94a3b8', fontSize: '12px', display: 'flex', alignItems: 'center', marginRight: '5px'}}><Filter size={14} style={{marginRight: '5px'}}/> Filtrar Tabela:</div>
+                        <button className="filter-btn" style={{background: filtroRelatorio === 'todos' ? '#3b82f6' : 'transparent', color: filtroRelatorio === 'todos' ? '#fff' : '#94a3b8'}} onClick={() => setFiltroRelatorio('todos')}>
+                          Todos
+                        </button>
+                        <button className="filter-btn" style={{background: filtroRelatorio === 'personalizada' ? '#10b981' : 'transparent', color: filtroRelatorio === 'personalizada' ? '#fff' : '#94a3b8', borderColor: filtroRelatorio === 'personalizada' ? '#059669' : '#475569'}} onClick={() => setFiltroRelatorio('personalizada')}>
+                          <ImageIcon size={14} /> Somente Personalizadas
+                        </button>
+                        <button className="filter-btn" style={{background: filtroRelatorio === 'padrao' ? '#475569' : 'transparent', color: filtroRelatorio === 'padrao' ? '#fff' : '#94a3b8'}} onClick={() => setFiltroRelatorio('padrao')}>
+                          <ImageOff size={14} /> Somente Brasão (Padrão)
+                        </button>
+                      </div>
+
+                      {patrocinadoresFiltrados.length === 0 ? (
+                        <div style={{color: '#94a3b8'}}>Nenhum patrocinador atende ao filtro atual.</div>
+                      ) : (
+                        <table className="report-table">
+                          <thead>
+                            <tr>
+                              <th style={{width: '80px', textAlign: 'center'}}>Pedra</th>
+                              <th>Nome Cadastrado</th>
+                              <th>Situação da Imagem</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {patrocinadoresFiltrados.map((p, i) => (
+                              <tr key={i}>
+                                <td style={{textAlign: 'center', color: '#FFD700'}}>{p.pedra}</td>
+                                <td>{p.nome}</td>
+                                <td style={{color: p.statusImagem.includes('Personalizada') ? '#10b981' : '#94a3b8'}}>
+                                  {p.statusImagem}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  </>
                 )}
               </div>
             )}
@@ -502,25 +661,52 @@ export default function App() {
             {/* VIEW CONFIGURAÇÕES */}
             {currentView === 'config' && (
               <div className="config-panel">
+                <h3 style={{color: '#94a3b8', marginBottom: '20px', borderBottom: '1px solid #334155', paddingBottom: '10px'}}>Preferências Gerais</h3>
                 <label className="config-item"><input type="checkbox" checked={pedirConfirmacao} onChange={(e) => setPedirConfirmacao(e.target.checked)} /> Confirmar envio de pedras</label>
                 <label className="config-item"><input type="checkbox" checked={usarEnter} onChange={(e) => setUsarEnter(e.target.checked)} /> Usar tecla "Enter" como atalho</label>
-                <label className="config-item" style={{cursor: 'default', marginTop: '40px', borderTop: '1px solid #334155', paddingTop: '30px'}}>
+                <label className="config-item" style={{cursor: 'default'}}>
                   Tempo do Popup no Telão: <input type="number" className="time-input" min="1" max="30" value={tempoPopup} onChange={handleTempoChange} /> seg
                 </label>
+
+                {/* VISUALIZAÇÃO DO RANKING */}
+                <h3 style={{color: '#94a3b8', marginTop: '40px', marginBottom: '20px', borderBottom: '1px solid #334155', paddingBottom: '10px'}}>O que mostrar no Ranking (Painel Lateral)?</h3>
+                
+                <label className="config-item" style={{marginBottom: '10px'}}>
+                  <input type="radio" name="visualizacao" checked={rastrearTodas} onChange={() => { setRastrearTodas(true); socket.emit('configurar_rastreio', { todas: true, lista: [] }); }} /> 
+                  Conferir todas as cartelas (Ranking Geral)
+                </label>
+
+                <label className="config-item" style={{marginBottom: '10px'}}>
+                  <input type="radio" name="visualizacao" checked={!rastrearTodas} onChange={() => { setRastrearTodas(false); }} /> 
+                  Conferência Individual (Acompanhar IDs específicos)
+                </label>
+
+                {!rastrearTodas && (
+                  <div style={{background: '#0f172a', padding: '20px', borderRadius: '12px', border: '1px dashed #475569', marginTop: '10px'}}>
+                    <p style={{fontSize: '13px', color: '#64748b', marginBottom: '15px'}}>Digite os números das cartelas que você quer acompanhar na tela principal:</p>
+                    <textarea 
+                      className="pat-input" 
+                      rows={4} 
+                      style={{width: '100%', resize: 'vertical'}}
+                      placeholder="Ex: 5, 12, 80"
+                      value={listaCartelasStr}
+                      onChange={(e) => setListaCartelasStr(e.target.value)}
+                    />
+                    <button className="btn-action" style={{padding: '12px 20px', borderRadius: '8px', marginTop: '15px', fontWeight: '700', width: '100%'}} onClick={salvarConfigRastreio}>
+                      Aplicar no Painel
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
         </main>
       </div>
 
-      {/* MODAL DE AVISO (NOVO E BONITO) */}
       {modalAviso && (
         <div className="overlay" onClick={() => setModalAviso(null)}>
           <div className="modal">
-            {modalAviso.tipo === 'sucesso' 
-              ? <CheckCircle size={50} color="#10b981" style={{margin: '0 auto', marginBottom: '15px'}} />
-              : <AlertCircle size={50} color="#ef4444" style={{margin: '0 auto', marginBottom: '15px'}} />
-            }
+            {modalAviso.tipo === 'sucesso' ? <CheckCircle size={50} color="#10b981" style={{margin: '0 auto', marginBottom: '15px'}} /> : <AlertCircle size={50} color="#ef4444" style={{margin: '0 auto', marginBottom: '15px'}} />}
             <h2 style={{color: modalAviso.tipo === 'sucesso' ? '#10b981' : '#ef4444'}}>{modalAviso.titulo}</h2>
             <p>{modalAviso.msg}</p>
             <button className="btn-m btn-light" onClick={() => setModalAviso(null)}>Entendido</button>
@@ -528,7 +714,6 @@ export default function App() {
         </div>
       )}
 
-      {/* OUTROS MODAIS */}
       {modalReiniciar && (
         <div className="overlay">
           <div className="modal">

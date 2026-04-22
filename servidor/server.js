@@ -10,16 +10,10 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
-});
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
 
 const uploadDir = path.join(__dirname, '../interface/public/patrocinadores');
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-// 🔥 O SEGREDO ESTÁ AQUI: O Backend agora serve as imagens ao vivo!
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 app.use('/patrocinadores', express.static(uploadDir));
 
 const storage = multer.diskStorage({
@@ -39,32 +33,37 @@ app.post('/upload', upload.single('imagem'), (req, res) => {
 let pedrasSorteadas = [];
 let cartelas = [];
 let patrocinadores = {};
+let rastreioConfig = { todas: true, lista: [] };
 
-try {
-    const rawData = fs.readFileSync('cartelas.json');
-    cartelas = JSON.parse(rawData);
-    console.log(`✅ ${cartelas.length} cartelas prontas!`);
-} catch (err) { console.error("❌ ERRO: 'cartelas.json' não encontrado."); }
-
-try {
-    const patData = fs.readFileSync('patrocinadores.json');
-    patrocinadores = JSON.parse(patData);
-    console.log(`✅ Patrocinadores carregados localmente!`);
-} catch (err) { 
-    fs.writeFileSync('patrocinadores.json', JSON.stringify({}));
-}
+try { cartelas = JSON.parse(fs.readFileSync('cartelas.json')); console.log(`✅ ${cartelas.length} cartelas prontas!`); } catch (err) {}
+try { patrocinadores = JSON.parse(fs.readFileSync('patrocinadores.json')); } catch (err) { fs.writeFileSync('patrocinadores.json', JSON.stringify({})); }
+try { rastreioConfig = JSON.parse(fs.readFileSync('rastreio.json')); } catch (err) { fs.writeFileSync('rastreio.json', JSON.stringify(rastreioConfig)); }
 
 function enviarRanking() {
-    let ranking = cartelas.map(cartela => {
+    let rankingData = [];
+    if (rastreioConfig.todas) {
+        let ranking = cartelas.map(c => ({ tabela: c.tabela || c.id, faltam: c.numeros.filter(n => !pedrasSorteadas.includes(n)).length, numeros: c.numeros }));
+        ranking.sort((a, b) => a.faltam - b.faltam);
+        rankingData = ranking.slice(0, 50);
+    } else {
+        let selecionadas = cartelas.filter(c => rastreioConfig.lista.includes(c.tabela?.toString()) || rastreioConfig.lista.includes(c.id?.toString()));
+        rankingData = selecionadas.map(c => ({ tabela: c.tabela || c.id, faltam: c.numeros.filter(n => !pedrasSorteadas.includes(n)).length, numeros: c.numeros }));
+        rankingData.sort((a, b) => a.faltam - b.faltam);
+    }
+    io.emit('ranking_update', rankingData);
+}
+
+function atualizarAlertas() {
+    let alertas = [];
+    cartelas.forEach(cartela => {
         let faltam = cartela.numeros.filter(n => !pedrasSorteadas.includes(n)).length;
-        return { tabela: cartela.tabela || cartela.id, faltam: faltam, numeros: cartela.numeros };
+        if (faltam <= 1) alertas.push({ tabela: cartela.tabela || cartela.id, nome: cartela.nome || "Jogador", faltam: faltam, bingo: faltam === 0 });
     });
-    ranking.sort((a, b) => a.faltam - b.faltam);
-    io.emit('ranking_update', ranking.slice(0, 50));
+    io.emit('alerta_proximidade', alertas);
 }
 
 io.on('connection', (socket) => {
-    socket.emit('init', { pedrasSorteadas, patrocinadores });
+    socket.emit('init', { pedrasSorteadas, patrocinadores, rastreioConfig });
     enviarRanking(); 
 
     socket.on('salvar_patrocinadores', (novos) => {
@@ -73,17 +72,45 @@ io.on('connection', (socket) => {
         io.emit('patrocinadores_atualizados', patrocinadores);
     });
 
+    // NOVO: DELETAR APENAS A IMAGEM
+    socket.on('remover_imagem_patrocinador', ({ numero, index }) => {
+        const filepath = path.join(uploadDir, `${numero}-${parseInt(index) + 1}.png`);
+        if (fs.existsSync(filepath)) {
+            fs.unlinkSync(filepath);
+            console.log(`🗑️ Imagem da pedra ${numero} removida (Voltando ao Brasão).`);
+        }
+        io.emit('patrocinadores_atualizados', patrocinadores);
+    });
+
+    // NOVO: GERAR RELATÓRIO
+    socket.on('pedir_relatorio', () => {
+        let relatorioPatros = [];
+        for (const [num, nomes] of Object.entries(patrocinadores)) {
+            const listaNomes = Array.isArray(nomes) ? nomes : [nomes];
+            listaNomes.forEach((nome, idx) => {
+                const filepath = path.join(uploadDir, `${num}-${idx + 1}.png`);
+                const temImagem = fs.existsSync(filepath);
+                relatorioPatros.push({
+                    pedra: num,
+                    nome: nome,
+                    statusImagem: temImagem ? 'Imagem Personalizada' : 'Imagem Brasão da Paróquia'
+                });
+            });
+        }
+        socket.emit('retorno_relatorio', { sorteados: pedrasSorteadas, patrocinadores: relatorioPatros });
+    });
+
+    socket.on('configurar_rastreio', (config) => {
+        rastreioConfig = config;
+        fs.writeFileSync('rastreio.json', JSON.stringify(rastreioConfig, null, 2));
+        enviarRanking();
+    });
+
     socket.on('sortear_pedra', (num) => {
         if (!pedrasSorteadas.includes(num)) {
             pedrasSorteadas.push(num);
             io.emit('pedra_sorteada', num);
-            
-            let alertas = [];
-            cartelas.forEach(cartela => {
-                let faltam = cartela.numeros.filter(n => !pedrasSorteadas.includes(n)).length;
-                if (faltam <= 1) alertas.push({ tabela: cartela.tabela || cartela.id, nome: cartela.nome || "Jogador", faltam: faltam, bingo: faltam === 0 });
-            });
-            if (alertas.length > 0) io.emit('alerta_proximidade', alertas);
+            atualizarAlertas();
             enviarRanking();
         }
     });
@@ -101,4 +128,4 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando na porta 5001 com Upload Automático!`); });
+server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando com Relatórios e Edição Inteligente!`); });
