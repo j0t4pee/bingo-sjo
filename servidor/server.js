@@ -8,6 +8,7 @@ const multer = require('multer');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
@@ -30,14 +31,20 @@ app.post('/upload', upload.single('imagem'), (req, res) => {
     res.json({ success: true });
 });
 
+// Variáveis de Estado
 let pedrasSorteadas = [];
 let cartelas = [];
 let patrocinadores = {};
 let rastreioConfig = { todas: true, lista: [] };
+let historicoJogos = [];
 
+// --- CARREGAMENTO DOS DADOS PERSISTENTES ---
 try { cartelas = JSON.parse(fs.readFileSync('cartelas.json')); console.log(`✅ ${cartelas.length} cartelas prontas!`); } catch (err) {}
 try { patrocinadores = JSON.parse(fs.readFileSync('patrocinadores.json')); } catch (err) { fs.writeFileSync('patrocinadores.json', JSON.stringify({})); }
 try { rastreioConfig = JSON.parse(fs.readFileSync('rastreio.json')); } catch (err) { fs.writeFileSync('rastreio.json', JSON.stringify(rastreioConfig)); }
+try { historicoJogos = JSON.parse(fs.readFileSync('historico.json')); } catch (err) { fs.writeFileSync('historico.json', JSON.stringify([])); }
+try { pedrasSorteadas = JSON.parse(fs.readFileSync('estado_jogo.json')); } catch (err) { fs.writeFileSync('estado_jogo.json', JSON.stringify([])); }
+
 
 function enviarRanking() {
     let rankingData = [];
@@ -63,16 +70,18 @@ function atualizarAlertas() {
 }
 
 io.on('connection', (socket) => {
-    socket.emit('init', { pedrasSorteadas, patrocinadores, rastreioConfig });
+    // 1. Envia tudo que está salvo na memória/arquivos para o frontend que acabou de conectar
+    socket.emit('init', { pedrasSorteadas, patrocinadores, rastreioConfig, historicoJogos });
     enviarRanking(); 
 
+    // 2. Salvar Patrocinadores
     socket.on('salvar_patrocinadores', (novos) => {
         patrocinadores = novos;
         fs.writeFileSync('patrocinadores.json', JSON.stringify(patrocinadores, null, 2));
         io.emit('patrocinadores_atualizados', patrocinadores);
     });
 
-    // NOVO: DELETAR APENAS A IMAGEM
+    // 3. Deletar Apenas a Imagem
     socket.on('remover_imagem_patrocinador', ({ numero, index }) => {
         const filepath = path.join(uploadDir, `${numero}-${parseInt(index) + 1}.png`);
         if (fs.existsSync(filepath)) {
@@ -82,7 +91,7 @@ io.on('connection', (socket) => {
         io.emit('patrocinadores_atualizados', patrocinadores);
     });
 
-    // NOVO: GERAR RELATÓRIO
+    // 4. Gerar Relatório
     socket.on('pedir_relatorio', () => {
         let relatorioPatros = [];
         for (const [num, nomes] of Object.entries(patrocinadores)) {
@@ -100,32 +109,77 @@ io.on('connection', (socket) => {
         socket.emit('retorno_relatorio', { sorteados: pedrasSorteadas, patrocinadores: relatorioPatros });
     });
 
+    // 5. Configurar Rastreio
     socket.on('configurar_rastreio', (config) => {
         rastreioConfig = config;
         fs.writeFileSync('rastreio.json', JSON.stringify(rastreioConfig, null, 2));
         enviarRanking();
     });
 
+    // 6. Sortear Pedra
     socket.on('sortear_pedra', (num) => {
         if (!pedrasSorteadas.includes(num)) {
             pedrasSorteadas.push(num);
+            fs.writeFileSync('estado_jogo.json', JSON.stringify(pedrasSorteadas)); // Salva estado atual
             io.emit('pedra_sorteada', num);
+            io.emit('update_sorteados', pedrasSorteadas); // Atualiza os painéis
             atualizarAlertas();
             enviarRanking();
         }
     });
 
+    // 7. 🔥 NOVO: Atualizar Pedra (Edição Inline no Histórico) 🔥
+    socket.on('atualizar_pedra', ({ index, oldNum, newNum }) => {
+        if (pedrasSorteadas[index] === oldNum && !pedrasSorteadas.includes(newNum)) {
+            pedrasSorteadas[index] = newNum;
+            fs.writeFileSync('estado_jogo.json', JSON.stringify(pedrasSorteadas)); // Salva estado atual
+            io.emit('update_sorteados', pedrasSorteadas);
+            atualizarAlertas();
+            enviarRanking();
+        }
+    });
+
+    // 8. Remover Pedra (Exclusão pelo painel)
+    socket.on('remover_pedra', (num) => {
+        pedrasSorteadas = pedrasSorteadas.filter(n => n !== num);
+        fs.writeFileSync('estado_jogo.json', JSON.stringify(pedrasSorteadas));
+        io.emit('update_sorteados', pedrasSorteadas);
+        atualizarAlertas();
+        enviarRanking();
+    });
+
+    // 9. Buscar Cartela
     socket.on('buscar_cartela', (idBuscado) => {
         const cartela = cartelas.find(c => c.tabela == idBuscado || c.id == idBuscado);
         if (cartela) socket.emit('retorno_cartela', { id: cartela.tabela || cartela.id, numeros: cartela.numeros });
         else socket.emit('retorno_cartela', null);
     });
 
-    socket.on('resetar', () => {
+    // 10. 🔥 NOVO: Resetar Rodada (Salva no Histórico) 🔥
+    socket.on('resetar', (dados) => {
+        if (pedrasSorteadas.length > 0) {
+            historicoJogos.unshift({
+                id: Date.now(),
+                nome: dados?.nome || `Rodada ${historicoJogos.length + 1}`,
+                data: new Date().toLocaleString('pt-BR'),
+                pedras: [...pedrasSorteadas]
+            });
+            fs.writeFileSync('historico.json', JSON.stringify(historicoJogos, null, 2));
+        }
+        
         pedrasSorteadas = [];
-        io.emit('reseta_jogo');
+        fs.writeFileSync('estado_jogo.json', JSON.stringify([])); // Zera as pedras em andamento
+        io.emit('historico_atualizado', historicoJogos); // Envia o histórico atualizado
+        io.emit('reseta_jogo'); // Limpa a tela
         enviarRanking(); 
+    });
+
+    // 11. 🔥 NOVO: Excluir Jogo do Histórico 🔥
+    socket.on('excluir_jogo_salvo', (id) => {
+        historicoJogos = historicoJogos.filter(jogo => jogo.id !== id);
+        fs.writeFileSync('historico.json', JSON.stringify(historicoJogos, null, 2));
+        io.emit('historico_atualizado', historicoJogos);
     });
 });
 
-server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando com Relatórios e Edição Inteligente!`); });
+server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando com Relatórios, Edição Inteligente e Persistência Completa!`); });
