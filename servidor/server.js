@@ -8,7 +8,6 @@ const multer = require('multer');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] } });
@@ -27,24 +26,22 @@ const storage = multer.diskStorage({
 const upload = multer({ storage: storage });
 
 app.post('/upload', upload.single('imagem'), (req, res) => {
-    console.log(`📸 Nova imagem salva com sucesso para a pedra: ${req.body.numero}`);
     res.json({ success: true });
 });
 
-// Variáveis de Estado
 let pedrasSorteadas = [];
 let cartelas = [];
 let patrocinadores = {};
 let rastreioConfig = { todas: true, lista: [] };
 let historicoJogos = [];
 
-// --- CARREGAMENTO DOS DADOS PERSISTENTES ---
-try { cartelas = JSON.parse(fs.readFileSync('cartelas.json')); console.log(`✅ ${cartelas.length} cartelas prontas!`); } catch (err) {}
+// 🔥 NOVO: GARANTE A PERSISTÊNCIA DO JOGO ATUAL MESMO SE O SERVIDOR REINICIAR 🔥
+try { pedrasSorteadas = JSON.parse(fs.readFileSync('jogo_atual.json')); } catch (err) { fs.writeFileSync('jogo_atual.json', JSON.stringify([])); }
+
+try { cartelas = JSON.parse(fs.readFileSync('cartelas.json')); } catch (err) {}
 try { patrocinadores = JSON.parse(fs.readFileSync('patrocinadores.json')); } catch (err) { fs.writeFileSync('patrocinadores.json', JSON.stringify({})); }
 try { rastreioConfig = JSON.parse(fs.readFileSync('rastreio.json')); } catch (err) { fs.writeFileSync('rastreio.json', JSON.stringify(rastreioConfig)); }
-try { historicoJogos = JSON.parse(fs.readFileSync('historico.json')); } catch (err) { fs.writeFileSync('historico.json', JSON.stringify([])); }
-try { pedrasSorteadas = JSON.parse(fs.readFileSync('estado_jogo.json')); } catch (err) { fs.writeFileSync('estado_jogo.json', JSON.stringify([])); }
-
+try { historicoJogos = JSON.parse(fs.readFileSync('historico_jogos.json')); } catch (err) { fs.writeFileSync('historico_jogos.json', JSON.stringify([])); }
 
 function enviarRanking() {
     let rankingData = [];
@@ -60,126 +57,86 @@ function enviarRanking() {
     io.emit('ranking_update', rankingData);
 }
 
-function atualizarAlertas() {
-    let alertas = [];
-    cartelas.forEach(cartela => {
-        let faltam = cartela.numeros.filter(n => !pedrasSorteadas.includes(n)).length;
-        if (faltam <= 1) alertas.push({ tabela: cartela.tabela || cartela.id, nome: cartela.nome || "Jogador", faltam: faltam, bingo: faltam === 0 });
-    });
-    io.emit('alerta_proximidade', alertas);
-}
-
 io.on('connection', (socket) => {
-    // 1. Envia tudo que está salvo na memória/arquivos para o frontend que acabou de conectar
     socket.emit('init', { pedrasSorteadas, patrocinadores, rastreioConfig, historicoJogos });
     enviarRanking(); 
 
-    // 2. Salvar Patrocinadores
     socket.on('salvar_patrocinadores', (novos) => {
         patrocinadores = novos;
         fs.writeFileSync('patrocinadores.json', JSON.stringify(patrocinadores, null, 2));
         io.emit('patrocinadores_atualizados', patrocinadores);
     });
 
-    // 3. Deletar Apenas a Imagem
     socket.on('remover_imagem_patrocinador', ({ numero, index }) => {
         const filepath = path.join(uploadDir, `${numero}-${parseInt(index) + 1}.png`);
-        if (fs.existsSync(filepath)) {
-            fs.unlinkSync(filepath);
-            console.log(`🗑️ Imagem da pedra ${numero} removida (Voltando ao Brasão).`);
-        }
+        if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
         io.emit('patrocinadores_atualizados', patrocinadores);
     });
 
-    // 4. Gerar Relatório
     socket.on('pedir_relatorio', () => {
         let relatorioPatros = [];
         for (const [num, nomes] of Object.entries(patrocinadores)) {
             const listaNomes = Array.isArray(nomes) ? nomes : [nomes];
             listaNomes.forEach((nome, idx) => {
                 const filepath = path.join(uploadDir, `${num}-${idx + 1}.png`);
-                const temImagem = fs.existsSync(filepath);
-                relatorioPatros.push({
-                    pedra: num,
-                    nome: nome,
-                    statusImagem: temImagem ? 'Imagem Personalizada' : 'Imagem Brasão da Paróquia'
-                });
+                relatorioPatros.push({ pedra: num, nome: nome, statusImagem: fs.existsSync(filepath) ? 'Imagem Personalizada' : 'Imagem Brasão da Paróquia' });
             });
         }
         socket.emit('retorno_relatorio', { sorteados: pedrasSorteadas, patrocinadores: relatorioPatros });
     });
 
-    // 5. Configurar Rastreio
     socket.on('configurar_rastreio', (config) => {
         rastreioConfig = config;
         fs.writeFileSync('rastreio.json', JSON.stringify(rastreioConfig, null, 2));
         enviarRanking();
     });
 
-    // 6. Sortear Pedra
     socket.on('sortear_pedra', (num) => {
         if (!pedrasSorteadas.includes(num)) {
             pedrasSorteadas.push(num);
-            fs.writeFileSync('estado_jogo.json', JSON.stringify(pedrasSorteadas)); // Salva estado atual
+            fs.writeFileSync('jogo_atual.json', JSON.stringify(pedrasSorteadas)); // Salva estado
             io.emit('pedra_sorteada', num);
-            io.emit('update_sorteados', pedrasSorteadas); // Atualiza os painéis
-            atualizarAlertas();
-            enviarRanking();
-        }
-    });
-
-    // 7. 🔥 NOVO: Atualizar Pedra (Edição Inline no Histórico) 🔥
-    socket.on('atualizar_pedra', ({ index, oldNum, newNum }) => {
-        if (pedrasSorteadas[index] === oldNum && !pedrasSorteadas.includes(newNum)) {
-            pedrasSorteadas[index] = newNum;
-            fs.writeFileSync('estado_jogo.json', JSON.stringify(pedrasSorteadas)); // Salva estado atual
             io.emit('update_sorteados', pedrasSorteadas);
-            atualizarAlertas();
             enviarRanking();
         }
     });
 
-    // 8. Remover Pedra (Exclusão pelo painel)
     socket.on('remover_pedra', (num) => {
         pedrasSorteadas = pedrasSorteadas.filter(n => n !== num);
-        fs.writeFileSync('estado_jogo.json', JSON.stringify(pedrasSorteadas));
+        fs.writeFileSync('jogo_atual.json', JSON.stringify(pedrasSorteadas)); // Atualiza estado
         io.emit('update_sorteados', pedrasSorteadas);
-        atualizarAlertas();
         enviarRanking();
     });
 
-    // 9. Buscar Cartela
     socket.on('buscar_cartela', (idBuscado) => {
         const cartela = cartelas.find(c => c.tabela == idBuscado || c.id == idBuscado);
         if (cartela) socket.emit('retorno_cartela', { id: cartela.tabela || cartela.id, numeros: cartela.numeros });
         else socket.emit('retorno_cartela', null);
     });
 
-    // 10. 🔥 NOVO: Resetar Rodada (Salva no Histórico) 🔥
-    socket.on('resetar', (dados) => {
-        if (pedrasSorteadas.length > 0) {
+    socket.on('resetar', (dadosRodada) => {
+        if (dadosRodada && dadosRodada.nome) {
             historicoJogos.unshift({
                 id: Date.now(),
-                nome: dados?.nome || `Rodada ${historicoJogos.length + 1}`,
+                nome: dadosRodada.nome,
                 data: new Date().toLocaleString('pt-BR'),
                 pedras: [...pedrasSorteadas]
             });
-            fs.writeFileSync('historico.json', JSON.stringify(historicoJogos, null, 2));
+            fs.writeFileSync('historico_jogos.json', JSON.stringify(historicoJogos, null, 2));
+            io.emit('historico_atualizado', historicoJogos);
         }
-        
         pedrasSorteadas = [];
-        fs.writeFileSync('estado_jogo.json', JSON.stringify([])); // Zera as pedras em andamento
-        io.emit('historico_atualizado', historicoJogos); // Envia o histórico atualizado
-        io.emit('reseta_jogo'); // Limpa a tela
+        fs.writeFileSync('jogo_atual.json', JSON.stringify([])); // Zera estado atual
+        io.emit('update_sorteados', pedrasSorteadas);
+        io.emit('reseta_jogo');
         enviarRanking(); 
     });
 
-    // 11. 🔥 NOVO: Excluir Jogo do Histórico 🔥
     socket.on('excluir_jogo_salvo', (id) => {
-        historicoJogos = historicoJogos.filter(jogo => jogo.id !== id);
-        fs.writeFileSync('historico.json', JSON.stringify(historicoJogos, null, 2));
+        historicoJogos = historicoJogos.filter(j => j.id !== id);
+        fs.writeFileSync('historico_jogos.json', JSON.stringify(historicoJogos, null, 2));
         io.emit('historico_atualizado', historicoJogos);
     });
 });
 
-server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando com Relatórios, Edição Inteligente e Persistência Completa!`); });
+server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando e blindado!`); });

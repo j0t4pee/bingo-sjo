@@ -108,7 +108,7 @@ export default function Telao() {
         .default-mode.sidebar-size .fixed-brasao { height: 45px; }
         
         .default-mode.popup-size { flex: 0 1 100%; max-width: 450px; min-height: 160px; padding: 30px 40px; gap: 25px; justify-content: center; text-align: center; }
-        .default-mode.popup-size .sponsor-name { font-size: 24px; text-align: center; }
+        .default-mode.popup-size .sponsor-name { font-size: 30px; text-align: center; }
         .default-mode.popup-size .fixed-brasao { height: 70px; }
         
         .default-mode.popup-size:only-child { max-width: 600px; min-height: 250px; }
