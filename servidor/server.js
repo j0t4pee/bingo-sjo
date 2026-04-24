@@ -35,9 +35,7 @@ let patrocinadores = {};
 let rastreioConfig = { todas: true, lista: [] };
 let historicoJogos = [];
 
-// 🔥 NOVO: GARANTE A PERSISTÊNCIA DO JOGO ATUAL MESMO SE O SERVIDOR REINICIAR 🔥
 try { pedrasSorteadas = JSON.parse(fs.readFileSync('jogo_atual.json')); } catch (err) { fs.writeFileSync('jogo_atual.json', JSON.stringify([])); }
-
 try { cartelas = JSON.parse(fs.readFileSync('cartelas.json')); } catch (err) {}
 try { patrocinadores = JSON.parse(fs.readFileSync('patrocinadores.json')); } catch (err) { fs.writeFileSync('patrocinadores.json', JSON.stringify({})); }
 try { rastreioConfig = JSON.parse(fs.readFileSync('rastreio.json')); } catch (err) { fs.writeFileSync('rastreio.json', JSON.stringify(rastreioConfig)); }
@@ -45,13 +43,29 @@ try { historicoJogos = JSON.parse(fs.readFileSync('historico_jogos.json')); } ca
 
 function enviarRanking() {
     let rankingData = [];
+    let pedrasNum = pedrasSorteadas.map(Number);
+
     if (rastreioConfig.todas) {
-        let ranking = cartelas.map(c => ({ tabela: c.tabela || c.id, faltam: c.numeros.filter(n => !pedrasSorteadas.includes(n)).length, numeros: c.numeros }));
+        let ranking = cartelas.map(c => {
+            let numsCartela = c.numeros.map(Number);
+            return { 
+                tabela: c.tabela || c.id, 
+                faltam: numsCartela.filter(n => !pedrasNum.includes(n)).length, 
+                numeros: numsCartela 
+            };
+        });
         ranking.sort((a, b) => a.faltam - b.faltam);
         rankingData = ranking.slice(0, 50);
     } else {
         let selecionadas = cartelas.filter(c => rastreioConfig.lista.includes(c.tabela?.toString()) || rastreioConfig.lista.includes(c.id?.toString()));
-        rankingData = selecionadas.map(c => ({ tabela: c.tabela || c.id, faltam: c.numeros.filter(n => !pedrasSorteadas.includes(n)).length, numeros: c.numeros }));
+        rankingData = selecionadas.map(c => {
+            let numsCartela = c.numeros.map(Number);
+            return { 
+                tabela: c.tabela || c.id, 
+                faltam: numsCartela.filter(n => !pedrasNum.includes(n)).length, 
+                numeros: numsCartela 
+            };
+        });
         rankingData.sort((a, b) => a.faltam - b.faltam);
     }
     io.emit('ranking_update', rankingData);
@@ -92,9 +106,10 @@ io.on('connection', (socket) => {
     });
 
     socket.on('sortear_pedra', (num) => {
+        num = Number(num);
         if (!pedrasSorteadas.includes(num)) {
             pedrasSorteadas.push(num);
-            fs.writeFileSync('jogo_atual.json', JSON.stringify(pedrasSorteadas)); // Salva estado
+            fs.writeFileSync('jogo_atual.json', JSON.stringify(pedrasSorteadas)); 
             io.emit('pedra_sorteada', num);
             io.emit('update_sorteados', pedrasSorteadas);
             enviarRanking();
@@ -102,16 +117,27 @@ io.on('connection', (socket) => {
     });
 
     socket.on('remover_pedra', (num) => {
-        pedrasSorteadas = pedrasSorteadas.filter(n => n !== num);
-        fs.writeFileSync('jogo_atual.json', JSON.stringify(pedrasSorteadas)); // Atualiza estado
+        num = Number(num);
+        pedrasSorteadas = pedrasSorteadas.filter(n => Number(n) !== num);
+        fs.writeFileSync('jogo_atual.json', JSON.stringify(pedrasSorteadas)); 
         io.emit('update_sorteados', pedrasSorteadas);
         enviarRanking();
     });
 
     socket.on('buscar_cartela', (idBuscado) => {
         const cartela = cartelas.find(c => c.tabela == idBuscado || c.id == idBuscado);
-        if (cartela) socket.emit('retorno_cartela', { id: cartela.tabela || cartela.id, numeros: cartela.numeros });
+        if (cartela) socket.emit('retorno_cartela', { id: cartela.tabela || cartela.id, numeros: cartela.numeros.map(Number) });
         else socket.emit('retorno_cartela', null);
+    });
+
+    socket.on('atualizar_cartela', (novaCartela) => {
+        const index = cartelas.findIndex(c => c.tabela == novaCartela.id || c.id == novaCartela.id);
+        if (index !== -1) {
+            cartelas[index].numeros = novaCartela.numeros.map(Number);
+            fs.writeFileSync('cartelas.json', JSON.stringify(cartelas, null, 2));
+            enviarRanking();
+            socket.emit('retorno_cartela', { id: cartelas[index].tabela || cartelas[index].id, numeros: cartelas[index].numeros });
+        }
     });
 
     socket.on('resetar', (dadosRodada) => {
@@ -126,7 +152,7 @@ io.on('connection', (socket) => {
             io.emit('historico_atualizado', historicoJogos);
         }
         pedrasSorteadas = [];
-        fs.writeFileSync('jogo_atual.json', JSON.stringify([])); // Zera estado atual
+        fs.writeFileSync('jogo_atual.json', JSON.stringify([])); 
         io.emit('update_sorteados', pedrasSorteadas);
         io.emit('reseta_jogo');
         enviarRanking(); 
@@ -139,4 +165,4 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(5001, () => { console.log(`🚀 Servidor LOCAL rodando e blindado!`); });
+server.listen(5001, () => { console.log(`Servidor LOCAL rodando`); });
