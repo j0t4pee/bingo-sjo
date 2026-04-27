@@ -135,7 +135,7 @@ export default function Telao() {
           </div>
 
           <div className="gold-box">
-            <div className="gold-label">Último Número</div>
+            <div className="gold-label">Último Número QUE SAIU</div>
             <div className="gold-number">
               {ultimoSorteado ? (ultimoSorteado < 10 ? `0${ultimoSorteado}` : ultimoSorteado) : '--'}
             </div>
@@ -165,7 +165,7 @@ export default function Telao() {
         </aside>
 
         <main className="grid-area">
-          <h1 className="grid-header">NÚMEROS SORTEADOS</h1>
+          <h1 className="grid-header">NÚMEROS JÁ SORTEADOS</h1>
           <div className="grid-container">
             {Array.from({ length: 100 }, (_, i) => i + 1).map(n => (
               <div key={n} className={`cell ${n === ultimoSorteado ? 'ultima' : sorteados.includes(n) ? 'sorteada' : ''}`}>
